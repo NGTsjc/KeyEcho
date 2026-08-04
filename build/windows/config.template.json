@@ -1,0 +1,9 @@
+{
+  "bindings": [
+    {
+      "id": "sample",
+      "hotkey": "CTRL+ALT+1",
+      "audio_path": "asset/sample.wav"
+    }
+  ]
+}

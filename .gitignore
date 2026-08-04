@@ -1,0 +1,5 @@
+.trae
+target
+Cargo.lock
+dist
+Doc
