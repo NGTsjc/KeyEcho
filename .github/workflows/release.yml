@@ -1,0 +1,53 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Sync Cargo Version From Tag
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".Replace('v', '')
+          $content = Get-Content Cargo.toml -Raw
+          $content = $content -replace '(?m)^version\s*=\s*".*?"\s*$', "version = `"$version`""
+          Set-Content Cargo.toml $content -Encoding UTF8
+          Write-Host "Cargo.toml version synced to $version"
+
+      - name: Build and package
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File build/windows/package.ps1
+
+      - name: Zip release
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".Replace('v', '')
+          Compress-Archive -Path TempFile/dist/windows/* -DestinationPath KeyEcho_${version}_win64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeyEcho_win64
+          path: KeyEcho_*.zip
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          name: KeyEcho ${{ github.ref_name }}
+          artifacts: "KeyEcho_*.zip"
+          token: ${{ secrets.GITHUB_TOKEN }}
