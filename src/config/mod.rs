@@ -73,7 +73,19 @@ pub fn default_config_path() -> Result<PathBuf> {
     let executable_dir = executable
         .parent()
         .ok_or_else(|| anyhow!("executable path has no parent directory"))?;
-    Ok(executable_dir.join(CONFIG_FILE_NAME))
+    let exe_config = executable_dir.join(CONFIG_FILE_NAME);
+    if exe_config.exists() {
+        return Ok(exe_config);
+    }
+    // 兜底：可执行文件旁没有配置文件时，尝试当前工作目录下的配置文件，
+    // 覆盖“仅复制 exe 到其他目录”以及开发时从项目根目录 cargo run 的场景。
+    if let Ok(current_dir) = std::env::current_dir() {
+        let cwd_config = current_dir.join(CONFIG_FILE_NAME);
+        if current_dir != executable_dir && cwd_config.exists() {
+            return Ok(cwd_config);
+        }
+    }
+    Ok(exe_config)
 }
 
 pub fn load_config(config_path: &Path) -> Result<Vec<BindingConfig>> {
@@ -256,9 +268,10 @@ mod tests {
 
     #[test]
     fn resolve_audio_path_uses_config_directory_for_relative_values() {
-        let path = resolve_audio_path(Path::new("D:/apps/keyecho"), "asset/test.wav")
+        // 测试基路径统一使用项目 TempFile 目录
+        let path = resolve_audio_path(Path::new("TempFile/config"), "asset/test.wav")
             .expect("path should resolve");
-        assert_eq!(path, PathBuf::from("D:/apps/keyecho/asset/test.wav"));
+        assert_eq!(path, PathBuf::from("TempFile/config/asset/test.wav"));
     }
 
     #[test]

@@ -24,14 +24,19 @@ pub fn run() -> Result<()> {
     app.run()
 }
 
+/// 日志文件固定与配置文件同目录，便于整个应用目录整体搬移。
+fn log_file_path(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("keyecho.log")
+}
+
 /// 已有实例运行时，不初始化日志（避免截断正在运行的实例的日志文件），
 /// 仅追加一行说明并退出。
 fn record_duplicate_launch(config_path: &Path) {
     use std::io::Write;
-    let log_path = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("keyecho.log");
+    let log_path = log_file_path(config_path);
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(&log_path) {
         let _ = file.write_all(b"Another KeyEcho instance is already running, exiting\n");
     }
@@ -39,10 +44,7 @@ fn record_duplicate_launch(config_path: &Path) {
 }
 
 fn initialize_logging(config_path: &Path) {
-    let log_path = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("keyecho.log");
+    let log_path = log_file_path(config_path);
     let logger_config = ConfigBuilder::new().set_time_format_rfc3339().build();
     match File::create(&log_path) {
         Ok(file) => {

@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-$distRoot = Join-Path $repoRoot "dist\windows"
+$distRoot = Join-Path $repoRoot "TempFile\dist\windows"
 $assetDir = Join-Path $distRoot "asset"
-$binaryPath = Join-Path $repoRoot "target\release\KeyEcho.exe"
+$binaryPath = Join-Path $repoRoot "TempFile\target\release\KeyEcho.exe"
 $configTemplate = Join-Path $PSScriptRoot "config.template.json"
 $logoPath = Join-Path $repoRoot "asset\logo.ico"
 Write-Host "Building release binary..."

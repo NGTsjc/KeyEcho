@@ -441,15 +441,16 @@ mod tests {
 
     #[test]
     fn tray_icon_candidates_cover_cargo_run_and_deduplicate_workspace_asset() {
+        // 测试基路径统一使用项目 TempFile 目录
         let candidates = tray_icon_candidate_paths(
-            Some(Path::new("D:/repo/target/debug")),
-            Some(Path::new("D:/repo")),
+            Some(Path::new("TempFile/target/debug")),
+            Some(Path::new("TempFile")),
         );
         assert_eq!(
             candidates,
             vec![
-                PathBuf::from("D:/repo/asset/logo.ico"),
-                PathBuf::from("D:/repo/target/debug/asset/logo.ico"),
+                PathBuf::from("TempFile/asset/logo.ico"),
+                PathBuf::from("TempFile/target/debug/asset/logo.ico"),
             ]
         );
     }
@@ -457,16 +458,16 @@ mod tests {
     #[test]
     fn tray_icon_candidates_prefer_dist_asset_next_to_executable() {
         let candidates = tray_icon_candidate_paths(
-            Some(Path::new("D:/apps/KeyEcho/dist/windows")),
-            Some(Path::new("D:/different-working-dir")),
+            Some(Path::new("TempFile/app")),
+            Some(Path::new("TempFile/work")),
         );
         assert_eq!(
             candidates[0],
-            PathBuf::from("D:/apps/KeyEcho/dist/windows/asset/logo.ico")
+            PathBuf::from("TempFile/app/asset/logo.ico")
         );
         assert_eq!(
             candidates[1],
-            PathBuf::from("D:/different-working-dir/asset/logo.ico")
+            PathBuf::from("TempFile/work/asset/logo.ico")
         );
     }
 }
