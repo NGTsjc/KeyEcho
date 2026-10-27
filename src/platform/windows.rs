@@ -1,11 +1,10 @@
 use std::collections::HashSet;
 use std::mem::MaybeUninit;
-use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, bounded};
-use log::{info, warn};
+use log::info;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
@@ -308,109 +307,12 @@ fn normalize_vk(vk: u32) -> u32 {
     }
 }
 
+/// 与 build.rs 中的资源 ID 保持一致，直接复用 EXE 内嵌的应用图标。
 fn build_tray_icon() -> Result<Icon> {
-    let current_exe = std::env::current_exe().ok();
-    let exe_dir = current_exe
-        .as_ref()
-        .and_then(|path| path.parent())
-        .map(|path| path.to_path_buf());
-    let current_dir = std::env::current_dir().ok();
-    let icon_candidates = tray_icon_candidate_paths(exe_dir.as_deref(), current_dir.as_deref());
-    let mut last_icon_error = None;
-    for candidate in icon_candidates
-        .iter()
-        .map(|path| probe_icon_candidate(path))
-        .collect::<Vec<_>>()
-    {
-        if !candidate.exists {
-            continue;
-        }
-        match Icon::from_path(&candidate.path, None) {
-            Ok(icon) => {
-                info!("Loaded tray icon from {}", candidate.path.display());
-                return Ok(icon);
-            }
-            Err(error) => {
-                let error_message = format!("{error}");
-                warn!(
-                    "Failed to load tray icon from {}: {error_message}",
-                    candidate.path.display()
-                );
-                last_icon_error = Some(format!(
-                    "path={} error={error_message}",
-                    candidate.path.display()
-                ));
-            }
-        }
-    }
-    if icon_candidates.iter().all(|path| !path.exists()) {
-        let candidate_paths = icon_candidates
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        warn!(
-            "Tray icon file not found in candidate paths: {candidate_paths}"
-        );
-        last_icon_error = Some(format!("icon_file_missing candidates={candidate_paths}"));
-    }
-    warn!("Falling back to built-in tray icon");
-    if let Some(error) = last_icon_error {
-        warn!("Tray icon fallback reason: {error}");
-    }
-    build_generated_tray_icon()
-}
-
-fn build_generated_tray_icon() -> Result<Icon> {
-    let size = 32u32;
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let is_border = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
-            let is_vertical = (6..11).contains(&x) && (7..25).contains(&y);
-            let is_upper_arm = (11..23).contains(&x) && (7..12).contains(&y);
-            let is_lower_arm = (11..23).contains(&x) && (15..20).contains(&y);
-            let is_center_bar = (14..19).contains(&x) && (11..16).contains(&y);
-            let is_foreground =
-                is_border || is_vertical || is_upper_arm || is_lower_arm || is_center_bar;
-            if is_foreground {
-                rgba.extend_from_slice(&[51, 153, 255, 255]);
-            } else {
-                rgba.extend_from_slice(&[18, 18, 18, 255]);
-            }
-        }
-    }
-    Icon::from_rgba(rgba, size, size).context("failed to build tray icon")
-}
-
-fn tray_icon_candidate_paths(exe_dir: Option<&Path>, current_dir: Option<&Path>) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    let mut candidates = Vec::new();
-    let mut push_candidate = |path: PathBuf| {
-        if seen.insert(path.clone()) {
-            candidates.push(path);
-        }
-    };
-    let is_cargo_target_dir = exe_dir
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .map(|name| matches!(name, "debug" | "release"))
-        .unwrap_or(false);
-    if is_cargo_target_dir && let Some(dir) = current_dir {
-        push_candidate(dir.join("asset").join("logo.ico"));
-    }
-    if let Some(dir) = exe_dir {
-        push_candidate(dir.join("asset").join("logo.ico"));
-        if is_cargo_target_dir
-            && let Some(workspace_dir) = dir.parent().and_then(|path| path.parent())
-        {
-            push_candidate(workspace_dir.join("asset").join("logo.ico"));
-        }
-    }
-    if !is_cargo_target_dir && let Some(dir) = current_dir {
-        push_candidate(dir.join("asset").join("logo.ico"));
-    }
-    candidates
+    let icon = Icon::from_resource(1, None)
+        .context("failed to load embedded application icon for tray")?;
+    info!("Loaded tray icon from embedded application resource");
+    Ok(icon)
 }
 
 fn ensure_windows_message_queue() {
@@ -420,54 +322,12 @@ fn ensure_windows_message_queue() {
     }
 }
 
-struct IconCandidateProbe {
-    path: PathBuf,
-    exists: bool,
-}
-
-fn probe_icon_candidate(path: &Path) -> IconCandidateProbe {
-    let exists = path.exists();
-    IconCandidateProbe {
-        path: path.to_path_buf(),
-        exists,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::tray_icon_candidate_paths;
+    use super::build_tray_icon;
 
     #[test]
-    fn tray_icon_candidates_cover_cargo_run_and_deduplicate_workspace_asset() {
-        // 测试基路径统一使用项目 TempFile 目录
-        let candidates = tray_icon_candidate_paths(
-            Some(Path::new("TempFile/target/debug")),
-            Some(Path::new("TempFile")),
-        );
-        assert_eq!(
-            candidates,
-            vec![
-                PathBuf::from("TempFile/asset/logo.ico"),
-                PathBuf::from("TempFile/target/debug/asset/logo.ico"),
-            ]
-        );
-    }
-
-    #[test]
-    fn tray_icon_candidates_prefer_dist_asset_next_to_executable() {
-        let candidates = tray_icon_candidate_paths(
-            Some(Path::new("TempFile/app")),
-            Some(Path::new("TempFile/work")),
-        );
-        assert_eq!(
-            candidates[0],
-            PathBuf::from("TempFile/app/asset/logo.ico")
-        );
-        assert_eq!(
-            candidates[1],
-            PathBuf::from("TempFile/work/asset/logo.ico")
-        );
+    fn tray_icon_loads_from_embedded_application_resource() {
+        build_tray_icon().expect("tray icon should load without any external icon file");
     }
 }

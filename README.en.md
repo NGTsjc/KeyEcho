@@ -10,6 +10,7 @@ A Windows tray-resident tool that binds global hotkeys to local audio files. Pre
 - Single instance: launching a second instance exits automatically
 - Single audio playback: a new trigger interrupts the current playback
 - Portable: copy the whole folder anywhere and it just works
+- EXE and tray share an embedded icon; no external `logo.ico` is needed at runtime
 
 ## Requirements
 - Windows 10/11. Windows only (macOS not implemented yet)
