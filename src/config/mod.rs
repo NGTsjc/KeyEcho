@@ -8,6 +8,12 @@ use serde::Deserialize;
 
 pub const CONFIG_FILE_NAME: &str = "config.json";
 
+#[derive(Debug, Default)]
+pub struct AppConfig {
+    pub bindings: Vec<BindingConfig>,
+    pub language_file: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BindingConfig {
     pub id: String,
@@ -57,8 +63,26 @@ pub enum KeyCode {
 
 #[derive(Debug, Deserialize)]
 struct RawConfig {
+    #[serde(default, deserialize_with = "deserialize_language_file")]
+    language_file: Option<String>,
     #[serde(default)]
     bindings: Vec<RawBindingConfig>,
+}
+
+fn deserialize_language_file<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(path) => {
+            let path = path.trim();
+            Ok((!path.is_empty()).then(|| path.to_owned()))
+        }
+        _ => {
+            warn!("language_file must be a string or null; using English UI text");
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,10 +112,10 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(exe_config)
 }
 
-pub fn load_config(config_path: &Path) -> Result<Vec<BindingConfig>> {
+pub fn load_config(config_path: &Path) -> Result<AppConfig> {
     let content = fs::read_to_string(config_path)
         .with_context(|| format!("failed to read config file {}", config_path.display()))?;
-    let raw_config: RawConfig = serde_json::from_str(&content)
+    let raw_config: RawConfig = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .with_context(|| format!("failed to parse {}", config_path.display()))?;
     let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let mut bindings = Vec::new();
@@ -122,7 +146,10 @@ pub fn load_config(config_path: &Path) -> Result<Vec<BindingConfig>> {
             config_path.display()
         );
     }
-    Ok(bindings)
+    Ok(AppConfig {
+        bindings,
+        language_file: raw_config.language_file,
+    })
 }
 
 fn validate_binding(
@@ -178,9 +205,7 @@ pub fn parse_hotkey(raw: &str) -> Result<HotkeySpec> {
     }
     let keys = tokens
         .iter()
-        .map(|t| {
-            parse_key_code(t).ok_or_else(|| anyhow!("unsupported key token `{t}`"))
-        })
+        .map(|t| parse_key_code(t).ok_or_else(|| anyhow!("unsupported key token `{t}`")))
         .collect::<Result<Vec<_>>>()?;
     Ok(HotkeySpec { keys })
 }
@@ -249,6 +274,44 @@ mod tests {
     use super::{KeyCode, load_config, parse_hotkey, resolve_audio_path};
 
     #[test]
+    fn optional_language_selection_is_tolerant_and_preserves_bindings_with_bom() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for selection in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!("  ")),
+            Some(serde_json::json!(42)),
+            Some(serde_json::json!(false)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!({})),
+            Some(serde_json::json!("  locales/zh-CN.json  ")),
+        ] {
+            let mut value = serde_json::json!({"bindings":[{
+                "id":"sample", "hotkey":"F8", "audio_path":"asset/sample.wav"
+            }]});
+            if let Some(selection) = &selection {
+                value["language_file"] = selection.clone();
+            }
+            for bom in ["", "\u{feff}"] {
+                fs::write(&path, format!("{bom}{value}")).unwrap();
+                let config = load_config(&path).unwrap();
+                assert_eq!(config.bindings.len(), 1);
+                assert_eq!(config.bindings[0].id, "sample");
+                assert_eq!(
+                    config.language_file.as_deref(),
+                    selection
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parse_hotkey_supports_modifiers_and_keys() {
         let hotkey = parse_hotkey("ctrl + alt + 1").expect("hotkey should parse");
         assert_eq!(
@@ -289,7 +352,9 @@ mod tests {
 }"#,
         )
         .expect("config should write");
-        let bindings = load_config(&config_path).expect("config should load");
+        let bindings = load_config(&config_path)
+            .expect("config should load")
+            .bindings;
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].id, "valid");
         assert_eq!(

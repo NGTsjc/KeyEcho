@@ -8,6 +8,7 @@ use simplelog::{ConfigBuilder, LevelFilter, SimpleLogger, WriteLogger};
 
 use crate::audio::{self, AudioPlayer};
 use crate::config::{self, BindingConfig};
+use crate::language;
 use crate::platform::{self, HotkeyRegistration, PlatformEvent, PlatformRuntime};
 
 pub fn run() -> Result<()> {
@@ -37,7 +38,11 @@ fn log_file_path(config_path: &Path) -> PathBuf {
 fn record_duplicate_launch(config_path: &Path) {
     use std::io::Write;
     let log_path = log_file_path(config_path);
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(&log_path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+    {
         let _ = file.write_all(b"Another KeyEcho instance is already running, exiting\n");
     }
     eprintln!("Another KeyEcho instance is already running, exiting");
@@ -81,7 +86,7 @@ impl AppController {
     }
 
     fn run(&mut self) -> Result<()> {
-        self.reload_bindings()?;
+        self.reload_configuration()?;
         loop {
             let event = self.runtime.wait_for_event()?;
             if !self.process_event(event)? {
@@ -94,7 +99,7 @@ impl AppController {
         match event {
             PlatformEvent::RestartRequested => {
                 info!("Tray requested configuration reload");
-                self.reload_bindings()?;
+                self.reload_configuration()?;
                 Ok(true)
             }
             PlatformEvent::ExitRequested => {
@@ -109,19 +114,21 @@ impl AppController {
         }
     }
 
-    fn reload_bindings(&mut self) -> Result<()> {
-        self.runtime.clear_hotkeys()?;
-        let bindings = match config::load_config(&self.config_path) {
-            Ok(bindings) => bindings,
+    fn reload_configuration(&mut self) -> Result<()> {
+        let config = match config::load_config(&self.config_path) {
+            Ok(config) => config,
             Err(error) => {
                 error!(
                     "Failed to load config {}: {error:#}",
                     self.config_path.display()
                 );
-                self.active_bindings.clear();
-                return Ok(());
+                config::AppConfig::default()
             }
         };
+        let text = language::load_ui_text(&self.config_path, config.language_file.as_deref());
+        self.runtime.set_ui_text(&text)?;
+        self.runtime.clear_hotkeys()?;
+        let bindings = config.bindings;
         let registrations = bindings
             .iter()
             .map(|binding| HotkeyRegistration {
@@ -182,7 +189,129 @@ mod tests {
 
     use super::AppController;
     use crate::audio::AudioPlayer;
+    use crate::language::UiText;
     use crate::platform::{HotkeyRegistration, PlatformEvent, PlatformRuntime};
+
+    #[test]
+    fn startup_applies_language_overrides() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        write_config(&config, "sample", "F8", "asset/sample.wav");
+        set_language_file(&config, serde_json::json!("language.json"));
+        fs::write(
+            dir.path().join("language.json"),
+            r#"{"tray_reload_config":"重新加载配置","tray_exit":"退出"}"#,
+        )
+        .unwrap();
+        let state = Arc::new(Mutex::new(MockRuntimeState::default()));
+        let mut runtime = MockRuntime::new(state.clone());
+        runtime
+            .queued_events
+            .push_back(PlatformEvent::ExitRequested);
+        let audio = MockAudioPlayer::new(Arc::new(Mutex::new(MockAudioState::default())));
+        let mut controller = AppController::new(config, Box::new(runtime), Box::new(audio));
+        controller.run().unwrap();
+        assert_eq!(
+            state.lock().unwrap().applied_text,
+            vec![UiText {
+                tray_reload_config: "重新加载配置".into(),
+                tray_exit: "退出".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn language_selection_reloads_resets_and_falls_back_on_invalid_config() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        let language_path = dir.path().join("language.json");
+        write_config(&config, "sample", "F8", "asset/sample.wav");
+        fs::write(&language_path, r#"{"tray_exit":"退出"}"#).unwrap();
+        fs::write(dir.path().join("french.json"), r#"{"tray_exit":"Quitter"}"#).unwrap();
+        let state = Arc::new(Mutex::new(MockRuntimeState::default()));
+        let runtime = MockRuntime::new(state.clone());
+        let audio = MockAudioPlayer::new(Arc::new(Mutex::new(MockAudioState::default())));
+        let mut controller = AppController::new(config.clone(), Box::new(runtime), Box::new(audio));
+        // A legacy file is not automatically enabled.
+        controller.reload_configuration().unwrap();
+        assert_eq!(
+            state.lock().unwrap().applied_text.last(),
+            Some(&UiText::default())
+        );
+        for (selection, expected) in [
+            ("language.json", "退出"),
+            ("french.json", "Quitter"),
+            ("", "Exit"),
+            ("language.json", "退出"),
+        ] {
+            set_language_file(&config, serde_json::json!(selection));
+            controller
+                .process_event(PlatformEvent::RestartRequested)
+                .unwrap();
+            assert_eq!(
+                state.lock().unwrap().applied_text.last().unwrap().tray_exit,
+                expected
+            );
+            assert_eq!(controller.active_bindings.len(), 1);
+        }
+        fs::remove_file(&language_path).unwrap();
+        controller
+            .process_event(PlatformEvent::RestartRequested)
+            .unwrap();
+        assert_eq!(
+            state.lock().unwrap().applied_text.last(),
+            Some(&UiText::default())
+        );
+        fs::write(&language_path, r#"{"tray_exit":"退出"}"#).unwrap();
+        controller
+            .process_event(PlatformEvent::RestartRequested)
+            .unwrap();
+        assert_eq!(
+            state.lock().unwrap().applied_text.last().unwrap().tray_exit,
+            "退出"
+        );
+        fs::write(&config, "broken JSON").unwrap();
+        controller
+            .process_event(PlatformEvent::RestartRequested)
+            .unwrap();
+        assert!(controller.active_bindings.is_empty());
+        assert_eq!(
+            state.lock().unwrap().applied_text.last(),
+            Some(&UiText::default())
+        );
+        fs::remove_file(&config).unwrap();
+        controller
+            .process_event(PlatformEvent::RestartRequested)
+            .unwrap();
+        assert!(controller.active_bindings.is_empty());
+        assert_eq!(
+            state.lock().unwrap().applied_text.last(),
+            Some(&UiText::default())
+        );
+    }
+
+    #[test]
+    fn invalid_language_does_not_prevent_hotkey_playback() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        write_config(&config, "sample", "F8", "asset/sample.wav");
+        set_language_file(&config, serde_json::json!("language.json"));
+        fs::write(dir.path().join("language.json"), "broken JSON").unwrap();
+        let state = Arc::new(Mutex::new(MockRuntimeState::default()));
+        let runtime = MockRuntime::new(state.clone());
+        let audio_state = Arc::new(Mutex::new(MockAudioState::default()));
+        let audio = MockAudioPlayer::new(audio_state.clone());
+        let mut controller = AppController::new(config, Box::new(runtime), Box::new(audio));
+        controller.reload_configuration().unwrap();
+        controller
+            .process_event(PlatformEvent::HotkeyTriggered("sample".into()))
+            .unwrap();
+        assert_eq!(state.lock().unwrap().applied_text, vec![UiText::default()]);
+        assert_eq!(
+            audio_state.lock().unwrap().played_paths,
+            vec![dir.path().join("asset/sample.wav")]
+        );
+    }
 
     #[test]
     fn restart_reloads_updated_config() {
@@ -195,7 +324,7 @@ mod tests {
         let audio = Box::new(MockAudioPlayer::new(audio_state));
         let mut controller = AppController::new(config_path.clone(), runtime, audio);
         controller
-            .reload_bindings()
+            .reload_configuration()
             .expect("initial reload should work");
         write_config(&config_path, "second", "CTRL+ALT+2", "asset/two.wav");
         controller
@@ -220,7 +349,9 @@ mod tests {
         let audio_state = Arc::new(Mutex::new(MockAudioState::default()));
         let audio = Box::new(MockAudioPlayer::new(audio_state.clone()));
         let mut controller = AppController::new(config_path.clone(), runtime, audio);
-        controller.reload_bindings().expect("reload should work");
+        controller
+            .reload_configuration()
+            .expect("reload should work");
         controller
             .process_event(PlatformEvent::HotkeyTriggered("sample".to_owned()))
             .expect("hotkey should be processed");
@@ -242,13 +373,22 @@ mod tests {
             MockAudioState::default(),
         ))));
         let mut controller = AppController::new(config_path, runtime, audio);
-        controller.reload_bindings().expect("reload should work");
+        controller
+            .reload_configuration()
+            .expect("reload should work");
         let should_continue = controller
             .process_event(PlatformEvent::ExitRequested)
             .expect("exit should be processed");
         assert!(!should_continue);
         let state = runtime_state.lock().expect("runtime state should lock");
         assert_eq!(state.clear_hotkeys_calls, 2);
+    }
+
+    fn set_language_file(path: &Path, selection: serde_json::Value) {
+        let mut config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        config["language_file"] = selection;
+        fs::write(path, serde_json::to_string(&config).unwrap()).unwrap();
     }
 
     fn write_config(path: &Path, id: &str, hotkey: &str, audio_path: &str) {
@@ -260,6 +400,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockRuntimeState {
+        applied_text: Vec<UiText>,
         clear_hotkeys_calls: usize,
         registered_batches: Vec<Vec<HotkeyRegistration>>,
     }
@@ -279,6 +420,15 @@ mod tests {
     }
 
     impl PlatformRuntime for MockRuntime {
+        fn set_ui_text(&mut self, text: &UiText) -> Result<()> {
+            self.state
+                .lock()
+                .map_err(|_| anyhow!("runtime state poisoned"))?
+                .applied_text
+                .push(text.clone());
+            Ok(())
+        }
+
         fn register_hotkeys(&mut self, bindings: &[HotkeyRegistration]) -> Result<HashSet<String>> {
             let mut state = self
                 .state

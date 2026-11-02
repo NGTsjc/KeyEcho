@@ -31,7 +31,7 @@ jobs:
 
       - name: Build and package
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File build/windows/package.ps1
+        run: powershell -ExecutionPolicy Bypass -File ./package.ps1
 
       - name: Zip release
         shell: pwsh

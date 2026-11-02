@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::config::HotkeySpec;
+use crate::language::UiText;
 
 #[derive(Debug, Clone)]
 pub struct HotkeyRegistration {
@@ -18,6 +19,7 @@ pub enum PlatformEvent {
 }
 
 pub trait PlatformRuntime {
+    fn set_ui_text(&mut self, text: &UiText) -> Result<()>;
     fn register_hotkeys(&mut self, bindings: &[HotkeyRegistration]) -> Result<HashSet<String>>;
     fn clear_hotkeys(&mut self) -> Result<()>;
     fn wait_for_event(&mut self) -> Result<PlatformEvent>;

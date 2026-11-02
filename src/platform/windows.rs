@@ -10,19 +10,21 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F10, VK_F11, VK_F12,
-    VK_F13, VK_F14, VK_F15, VK_F16, VK_F17, VK_F18, VK_F19, VK_F2, VK_F20, VK_F21, VK_F22, VK_F23,
-    VK_F24, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_HOME, VK_INSERT, VK_LCONTROL,
-    VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_NEXT, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_5,
-    VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL,
-    VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5,
+    VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12, VK_F13, VK_F14, VK_F15, VK_F16, VK_F17,
+    VK_F18, VK_F19, VK_F20, VK_F21, VK_F22, VK_F23, VK_F24, VK_HOME, VK_INSERT, VK_LCONTROL,
+    VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_NEXT, VK_OEM_1, VK_OEM_2, VK_OEM_3,
+    VK_OEM_5, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR,
+    VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
+    VK_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
-    SetWindowsHookExW, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WH_KEYBOARD_LL,
+    SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::config::KeyCode;
+use crate::language::UiText;
 use crate::platform::{HotkeyRegistration, PlatformEvent, PlatformRuntime};
 
 static HOOK_STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
@@ -59,6 +61,8 @@ pub struct WindowsPlatformRuntime {
     _menu: Menu,
     restart_menu_id: MenuId,
     exit_menu_id: MenuId,
+    restart_item: MenuItem,
+    exit_item: MenuItem,
     menu_receiver: Receiver<MenuEvent>,
     hook_event_receiver: Receiver<PlatformEvent>,
 }
@@ -67,8 +71,9 @@ impl WindowsPlatformRuntime {
     pub fn new() -> Result<Self> {
         ensure_windows_message_queue();
         let menu = Menu::new();
-        let restart_item = MenuItem::new("重启", true, None);
-        let exit_item = MenuItem::new("退出", true, None);
+        let text = UiText::default();
+        let restart_item = MenuItem::new(&text.tray_reload_config, true, None);
+        let exit_item = MenuItem::new(&text.tray_exit, true, None);
         menu.append(&restart_item)
             .context("failed to add restart tray menu item")?;
         menu.append(&exit_item)
@@ -105,6 +110,8 @@ impl WindowsPlatformRuntime {
             _menu: menu,
             restart_menu_id: restart_item.id().clone(),
             exit_menu_id: exit_item.id().clone(),
+            restart_item,
+            exit_item,
             menu_receiver: MenuEvent::receiver().clone(),
             hook_event_receiver: event_receiver,
         })
@@ -136,6 +143,11 @@ impl WindowsPlatformRuntime {
 }
 
 impl PlatformRuntime for WindowsPlatformRuntime {
+    fn set_ui_text(&mut self, text: &UiText) -> Result<()> {
+        set_tray_menu_text(&self.restart_item, &self.exit_item, text);
+        Ok(())
+    }
+
     fn register_hotkeys(&mut self, bindings: &[HotkeyRegistration]) -> Result<HashSet<String>> {
         self.update_chord_bindings(bindings);
         let active_ids: HashSet<String> = bindings.iter().map(|b| b.id.clone()).collect();
@@ -315,16 +327,79 @@ fn build_tray_icon() -> Result<Icon> {
     Ok(icon)
 }
 
+fn set_tray_menu_text(restart_item: &MenuItem, exit_item: &MenuItem, text: &UiText) {
+    restart_item.set_text(text.tray_reload_config.replace('&', "&&"));
+    exit_item.set_text(text.tray_exit.replace('&', "&&"));
+}
+
 fn ensure_windows_message_queue() {
     unsafe {
         let mut message = MaybeUninit::<MSG>::zeroed();
-        let _ = PeekMessageW(message.as_mut_ptr(), std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+        let _ = PeekMessageW(
+            message.as_mut_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            PM_NOREMOVE,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_tray_icon;
+    use super::{build_tray_icon, set_tray_menu_text};
+    use crate::language::UiText;
+    use tray_icon::menu::{ContextMenu, Menu, MenuItem};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetMenuItemID, GetMenuStringW, MF_BYPOSITION,
+    };
+
+    #[test]
+    fn native_menu_updates_unicode_labels_without_changing_command_ids() {
+        let defaults = UiText::default();
+        let reload = MenuItem::new(&defaults.tray_reload_config, true, None);
+        let exit = MenuItem::new(&defaults.tray_exit, true, None);
+        let menu = Menu::with_items(&[&reload, &exit]).unwrap();
+        let handle = menu.hpopupmenu() as _;
+        let command_ids = unsafe { [GetMenuItemID(handle, 0), GetMenuItemID(handle, 1)] };
+        for text in [
+            UiText {
+                tray_reload_config: "重新加载配置".into(),
+                tray_exit: "退出".into(),
+            },
+            UiText {
+                tray_reload_config: "Reload & Refresh".into(),
+                tray_exit: "Exit && Close".into(),
+            },
+            defaults,
+        ] {
+            set_tray_menu_text(&reload, &exit, &text);
+            for (position, expected) in [&text.tray_reload_config, &text.tray_exit]
+                .iter()
+                .enumerate()
+            {
+                let mut buffer = [0u16; 128];
+                let length = unsafe {
+                    GetMenuStringW(
+                        handle,
+                        position as u32,
+                        buffer.as_mut_ptr(),
+                        buffer.len() as i32,
+                        MF_BYPOSITION,
+                    )
+                };
+                assert!(length > 0);
+                assert_eq!(
+                    String::from_utf16(&buffer[..length as usize]).unwrap(),
+                    expected.replace('&', "&&")
+                );
+                assert_eq!(
+                    unsafe { GetMenuItemID(handle, position as i32) },
+                    command_ids[position]
+                );
+            }
+        }
+    }
 
     #[test]
     fn tray_icon_loads_from_embedded_application_resource() {
