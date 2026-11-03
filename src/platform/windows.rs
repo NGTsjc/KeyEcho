@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{Context, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use log::info;
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -63,6 +63,7 @@ pub struct WindowsPlatformRuntime {
     exit_menu_id: MenuId,
     restart_item: MenuItem,
     exit_item: MenuItem,
+    overlap_item: CheckMenuItem,
     menu_receiver: Receiver<MenuEvent>,
     hook_event_receiver: Receiver<PlatformEvent>,
 }
@@ -74,6 +75,9 @@ impl WindowsPlatformRuntime {
         let text = UiText::default();
         let restart_item = MenuItem::new(&text.tray_reload_config, true, None);
         let exit_item = MenuItem::new(&text.tray_exit, true, None);
+        let overlap_item = CheckMenuItem::new(&text.tray_allow_overlap, true, false, None);
+        menu.append(&overlap_item)
+            .context("failed to add overlap tray menu item")?;
         menu.append(&restart_item)
             .context("failed to add restart tray menu item")?;
         menu.append(&exit_item)
@@ -112,6 +116,7 @@ impl WindowsPlatformRuntime {
             exit_menu_id: exit_item.id().clone(),
             restart_item,
             exit_item,
+            overlap_item,
             menu_receiver: MenuEvent::receiver().clone(),
             hook_event_receiver: event_receiver,
         })
@@ -143,8 +148,18 @@ impl WindowsPlatformRuntime {
 }
 
 impl PlatformRuntime for WindowsPlatformRuntime {
+    fn set_allow_overlap(&mut self, enabled: bool) -> Result<()> {
+        self.overlap_item.set_checked(enabled);
+        Ok(())
+    }
+
     fn set_ui_text(&mut self, text: &UiText) -> Result<()> {
-        set_tray_menu_text(&self.restart_item, &self.exit_item, text);
+        set_tray_menu_text(
+            &self.restart_item,
+            &self.exit_item,
+            &self.overlap_item,
+            text,
+        );
         Ok(())
     }
 
@@ -162,6 +177,11 @@ impl PlatformRuntime for WindowsPlatformRuntime {
     fn wait_for_event(&mut self) -> Result<PlatformEvent> {
         loop {
             if let Ok(event) = self.menu_receiver.try_recv() {
+                if event.id == *self.overlap_item.id() {
+                    return Ok(PlatformEvent::OverlapChanged(
+                        self.overlap_item.is_checked(),
+                    ));
+                }
                 let is_restart = event.id == self.restart_menu_id;
                 let is_exit = event.id == self.exit_menu_id;
                 if is_restart {
@@ -327,9 +347,15 @@ fn build_tray_icon() -> Result<Icon> {
     Ok(icon)
 }
 
-fn set_tray_menu_text(restart_item: &MenuItem, exit_item: &MenuItem, text: &UiText) {
+fn set_tray_menu_text(
+    restart_item: &MenuItem,
+    exit_item: &MenuItem,
+    overlap_item: &CheckMenuItem,
+    text: &UiText,
+) {
     restart_item.set_text(text.tray_reload_config.replace('&', "&&"));
     exit_item.set_text(text.tray_exit.replace('&', "&&"));
+    overlap_item.set_text(text.tray_allow_overlap.replace('&', "&&"));
 }
 
 fn ensure_windows_message_queue() {
@@ -349,9 +375,9 @@ fn ensure_windows_message_queue() {
 mod tests {
     use super::{build_tray_icon, set_tray_menu_text};
     use crate::language::UiText;
-    use tray_icon::menu::{ContextMenu, Menu, MenuItem};
+    use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuItem};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetMenuItemID, GetMenuStringW, MF_BYPOSITION,
+        GetMenuItemID, GetMenuState, GetMenuStringW, MF_BYPOSITION, MF_CHECKED,
     };
 
     #[test]
@@ -359,24 +385,48 @@ mod tests {
         let defaults = UiText::default();
         let reload = MenuItem::new(&defaults.tray_reload_config, true, None);
         let exit = MenuItem::new(&defaults.tray_exit, true, None);
-        let menu = Menu::with_items(&[&reload, &exit]).unwrap();
+        let overlap = CheckMenuItem::new(&defaults.tray_allow_overlap, true, false, None);
+        let menu = Menu::with_items(&[&reload, &exit, &overlap]).unwrap();
         let handle = menu.hpopupmenu() as _;
-        let command_ids = unsafe { [GetMenuItemID(handle, 0), GetMenuItemID(handle, 1)] };
+        let command_ids = unsafe {
+            [
+                GetMenuItemID(handle, 0),
+                GetMenuItemID(handle, 1),
+                GetMenuItemID(handle, 2),
+            ]
+        };
         for text in [
             UiText {
+                tray_allow_overlap: "Allow Overlapping Audio".into(),
                 tray_reload_config: "重新加载配置".into(),
                 tray_exit: "退出".into(),
             },
             UiText {
+                tray_allow_overlap: "Overlap & Mix".into(),
                 tray_reload_config: "Reload & Refresh".into(),
                 tray_exit: "Exit && Close".into(),
             },
             defaults,
         ] {
-            set_tray_menu_text(&reload, &exit, &text);
-            for (position, expected) in [&text.tray_reload_config, &text.tray_exit]
-                .iter()
-                .enumerate()
+            set_tray_menu_text(&reload, &exit, &overlap, &text);
+            overlap.set_checked(true);
+            assert!(overlap.is_checked());
+            assert_ne!(
+                unsafe { GetMenuState(handle, 2, MF_BYPOSITION) } & MF_CHECKED,
+                0
+            );
+            overlap.set_checked(false);
+            assert_eq!(
+                unsafe { GetMenuState(handle, 2, MF_BYPOSITION) } & MF_CHECKED,
+                0
+            );
+            for (position, expected) in [
+                &text.tray_reload_config,
+                &text.tray_exit,
+                &text.tray_allow_overlap,
+            ]
+            .iter()
+            .enumerate()
             {
                 let mut buffer = [0u16; 128];
                 let length = unsafe {

@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiText {
+    pub tray_allow_overlap: String,
     pub tray_reload_config: String,
     pub tray_exit: String,
 }
@@ -13,6 +14,7 @@ pub struct UiText {
 impl Default for UiText {
     fn default() -> Self {
         Self {
+            tray_allow_overlap: "Allow Overlapping Audio".to_owned(),
             tray_reload_config: "Reload Config".to_owned(),
             tray_exit: "Exit".to_owned(),
         }
@@ -57,6 +59,12 @@ pub fn load_ui_text(config_path: &Path, language_file: Option<&str>) -> UiText {
         &path,
     );
     apply_override(&overrides, "tray_exit", &mut text.tray_exit, &path);
+    apply_override(
+        &overrides,
+        "tray_allow_overlap",
+        &mut text.tray_allow_overlap,
+        &path,
+    );
     text
 }
 
@@ -102,6 +110,7 @@ mod tests {
         assert_eq!(
             load_ui_text(&config, Some("language.json")),
             UiText {
+                tray_allow_overlap: "Allow Overlapping Audio".into(),
                 tray_reload_config: "重新加载配置".into(),
                 tray_exit: "退出".into(),
             }
@@ -130,6 +139,7 @@ mod tests {
         let path = locales.join("zh-CN.json");
         fs::write(&path, format!("\u{feff}{example}")).unwrap();
         let expected = UiText {
+            tray_allow_overlap: "允许音频叠加".into(),
             tray_reload_config: "重新加载配置".into(),
             tray_exit: "退出".into(),
         };
@@ -156,7 +166,7 @@ mod tests {
         ] {
             fs::write(
                 dir.path().join("language.json"),
-                format!(r#"{{"tray_reload_config":{invalid},"tray_exit":"退出"}}"#),
+                format!(r#"{{"tray_reload_config":{invalid},"tray_allow_overlap":{invalid},"tray_exit":"退出"}}"#),
             )
             .unwrap();
             assert_eq!(

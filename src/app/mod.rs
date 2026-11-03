@@ -65,6 +65,7 @@ fn initialize_logging(config_path: &Path) {
 }
 
 struct AppController {
+    allow_overlap: bool,
     config_path: PathBuf,
     runtime: Box<dyn PlatformRuntime>,
     audio_player: Box<dyn AudioPlayer>,
@@ -78,6 +79,7 @@ impl AppController {
         audio_player: Box<dyn AudioPlayer>,
     ) -> Self {
         Self {
+            allow_overlap: false,
             config_path,
             runtime,
             audio_player,
@@ -97,6 +99,15 @@ impl AppController {
 
     fn process_event(&mut self, event: PlatformEvent) -> Result<bool> {
         match event {
+            PlatformEvent::OverlapChanged(enabled) => {
+                self.runtime.set_allow_overlap(enabled)?;
+                self.allow_overlap = enabled;
+                info!(
+                    "Overlapping audio {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+                Ok(true)
+            }
             PlatformEvent::RestartRequested => {
                 info!("Tray requested configuration reload");
                 self.reload_configuration()?;
@@ -125,6 +136,7 @@ impl AppController {
                 config::AppConfig::default()
             }
         };
+        self.runtime.set_allow_overlap(self.allow_overlap)?;
         let text = language::load_ui_text(&self.config_path, config.language_file.as_deref());
         self.runtime.set_ui_text(&text)?;
         self.runtime.clear_hotkeys()?;
@@ -150,7 +162,10 @@ impl AppController {
             warn!("Received hotkey event for unknown binding id `{binding_id}`");
             return;
         };
-        if let Err(error) = self.audio_player.play(&binding.audio_path) {
+        if let Err(error) = self
+            .audio_player
+            .play(&binding.audio_path, self.allow_overlap)
+        {
             error!(
                 "Failed to play binding `{}` from {}: {error:#}",
                 binding.id,
@@ -193,6 +208,64 @@ mod tests {
     use crate::platform::{HotkeyRegistration, PlatformEvent, PlatformRuntime};
 
     #[test]
+    fn tray_overlap_is_session_only_and_survives_configuration_reload() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.json");
+        write_config(&config, "sample", "F8", "asset/sample.wav");
+        let original = fs::read(&config).unwrap();
+        let runtime_state = Arc::new(Mutex::new(MockRuntimeState::default()));
+        let audio_state = Arc::new(Mutex::new(MockAudioState::default()));
+        let mut controller = AppController::new(
+            config.clone(),
+            Box::new(MockRuntime::new(runtime_state.clone())),
+            Box::new(MockAudioPlayer::new(audio_state.clone())),
+        );
+        controller.reload_configuration().unwrap();
+        assert!(!controller.allow_overlap);
+        for enabled in [false, true, false, true] {
+            let plays = audio_state.lock().unwrap().played_paths.len();
+            controller
+                .process_event(PlatformEvent::OverlapChanged(enabled))
+                .unwrap();
+            assert_eq!(audio_state.lock().unwrap().played_paths.len(), plays);
+            controller
+                .process_event(PlatformEvent::HotkeyTriggered("sample".into()))
+                .unwrap();
+            controller
+                .process_event(PlatformEvent::RestartRequested)
+                .unwrap();
+            assert_eq!(controller.allow_overlap, enabled);
+            assert_eq!(
+                runtime_state.lock().unwrap().overlap_modes.last(),
+                Some(&enabled)
+            );
+        }
+        assert_eq!(
+            audio_state.lock().unwrap().overlap_modes,
+            vec![false, true, false, true]
+        );
+        assert_eq!(fs::read(&config).unwrap(), original);
+        fs::write(&config, "broken JSON").unwrap();
+        controller
+            .process_event(PlatformEvent::RestartRequested)
+            .unwrap();
+        assert!(controller.allow_overlap);
+        assert!(controller.active_bindings.is_empty());
+        write_config(&config, "sample", "F8", "asset/sample.wav");
+        let mut restarted = AppController::new(
+            config,
+            Box::new(MockRuntime::new(runtime_state.clone())),
+            Box::new(MockAudioPlayer::new(audio_state)),
+        );
+        restarted.reload_configuration().unwrap();
+        assert!(!restarted.allow_overlap);
+        assert_eq!(
+            runtime_state.lock().unwrap().overlap_modes.last(),
+            Some(&false)
+        );
+    }
+
+    #[test]
     fn startup_applies_language_overrides() {
         let dir = tempdir().unwrap();
         let config = dir.path().join("config.json");
@@ -214,6 +287,7 @@ mod tests {
         assert_eq!(
             state.lock().unwrap().applied_text,
             vec![UiText {
+                tray_allow_overlap: "Allow Overlapping Audio".into(),
                 tray_reload_config: "重新加载配置".into(),
                 tray_exit: "退出".into(),
             }]
@@ -400,6 +474,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockRuntimeState {
+        overlap_modes: Vec<bool>,
         applied_text: Vec<UiText>,
         clear_hotkeys_calls: usize,
         registered_batches: Vec<Vec<HotkeyRegistration>>,
@@ -420,6 +495,15 @@ mod tests {
     }
 
     impl PlatformRuntime for MockRuntime {
+        fn set_allow_overlap(&mut self, enabled: bool) -> Result<()> {
+            self.state
+                .lock()
+                .map_err(|_| anyhow!("runtime state poisoned"))?
+                .overlap_modes
+                .push(enabled);
+            Ok(())
+        }
+
         fn set_ui_text(&mut self, text: &UiText) -> Result<()> {
             self.state
                 .lock()
@@ -457,6 +541,7 @@ mod tests {
     #[derive(Default)]
     struct MockAudioState {
         played_paths: Vec<PathBuf>,
+        overlap_modes: Vec<bool>,
     }
 
     struct MockAudioPlayer {
@@ -470,12 +555,13 @@ mod tests {
     }
 
     impl AudioPlayer for MockAudioPlayer {
-        fn play(&self, path: &Path) -> Result<()> {
+        fn play(&self, path: &Path, allow_overlap: bool) -> Result<()> {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| anyhow!("audio state poisoned"))?;
             state.played_paths.push(path.to_path_buf());
+            state.overlap_modes.push(allow_overlap);
             Ok(())
         }
     }

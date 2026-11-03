@@ -13,12 +13,14 @@ pub struct HotkeyRegistration {
 
 #[derive(Debug, Clone)]
 pub enum PlatformEvent {
+    OverlapChanged(bool),
     RestartRequested,
     ExitRequested,
     HotkeyTriggered(String),
 }
 
 pub trait PlatformRuntime {
+    fn set_allow_overlap(&mut self, enabled: bool) -> Result<()>;
     fn set_ui_text(&mut self, text: &UiText) -> Result<()>;
     fn register_hotkeys(&mut self, bindings: &[HotkeyRegistration]) -> Result<HashSet<String>>;
     fn clear_hotkeys(&mut self) -> Result<()>;

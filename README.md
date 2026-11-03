@@ -7,8 +7,8 @@ A Windows tray utility that binds global key combinations to local audio files.
 ## Features
 
 - Trigger audio by pressing multiple keys together, such as `CTRL+S+1`.
-- A new playback interrupts the current audio.
-- Tray menu with “Reload Config” and “Exit”.
+- New playback interrupts current audio by default; optional overlapping playback is supported.
+- Tray menu with “Allow Overlapping Audio”, “Reload Config” and “Exit”.
 - Single instance: additional launches exit automatically.
 - Portable configuration and audio files.
 - The EXE and tray share an embedded icon; no external ICO is required at runtime.
@@ -64,6 +64,8 @@ Example `config.json`:
 | `hotkey` | Case-insensitive key names joined by `+`; all keys in the combination must be held together |
 | `audio_path` | An absolute path, or a path relative to the directory containing `config.json` |
 
+Use the tray checkbox **Allow Overlapping Audio** to switch immediately: unchecked (default) interrupts all previous audio; checked allows simultaneous playback, including repeated triggers of the same audio. This choice lasts only for the current session and is preserved by `Reload Config`; restarting resets it to unchecked. Switching alone does not stop audio; after unchecking, the next successful playback stops all previous audio. Failed playback leaves current audio running. This option is not read from or written to `config.json`.
+
 Use `/` in Windows paths inside JSON, or escape each backslash as `\\`.
 
 Common key names:
@@ -88,6 +90,7 @@ Example `locale.json`:
 
 ```json
 {
+  "tray_allow_overlap": "允许音频叠加",
   "tray_reload_config": "重新加载配置",
   "tray_exit": "退出"
 }
@@ -97,6 +100,7 @@ Example `locale.json`:
 | --- | --- | --- |
 | `tray_reload_config` | `Reload Config` | Reload configuration and UI text |
 | `tray_exit` | `Exit` | Exit the application |
+| `tray_allow_overlap` | `Allow Overlapping Audio` | Toggle simultaneous audio playback |
 
 `language_file` accepts absolute paths. Relative paths resolve against the directory containing the selected `config.json`, not the executable or working directory. Omit it, use `null`, or leave it blank for English. Incorrect types log an English warning and disable only custom text, preserving valid audio bindings. Both configuration and language files support UTF-8 with or without a BOM.
 

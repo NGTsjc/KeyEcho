@@ -1,4 +1,5 @@
 {
+  "tray_allow_overlap": "允许音频叠加",
   "tray_reload_config": "重新加载配置",
   "tray_exit": "退出"
 }
